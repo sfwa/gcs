@@ -1,0 +1,354 @@
+/*
+Copyright (C) 2013 Ben Dyer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+body {
+    font: 14px "Proxima Nova", Helvetica, sans-serif;
+    padding: 10px 10px;
+}
+
+span.sc {
+    font-variant: small-caps;
+}
+
+#metrics {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 380px;
+    height: 100%;
+    overflow-y: auto;
+
+    padding-left: 20px;
+
+    background-image: linear-gradient(
+        to right,
+        rgba(255,255,255,0.9) 99%,
+        rgba(255,255,255,0.9) 100%);
+    box-shadow: 0 0 3px rgba(50, 50, 50, 0.5);
+}
+
+section {
+    display: inline-block;
+    vertical-align: top;
+
+    width: 354px;
+    padding: 10px 0;
+}
+
+dl {
+    display: table-row;
+}
+
+dt, dd {
+    display: table-cell;
+    vertical-align: middle;
+
+    margin: 0;
+    padding: 0;
+}
+
+dt.label {
+    color: #666;
+    text-align: right;
+
+    width: 90px;
+}
+
+dd.int, dd.float {
+    letter-spacing: 0px;
+    text-align: right;
+
+    width: 100px;
+}
+
+dd.bool, dd.text {
+    text-align: right;
+
+    width: 100px;
+}
+
+span.interval {
+    display: inline-block;
+    color: #bbb;
+
+    width: 40px;
+}
+
+dd.unit {
+    color: #bbb;
+
+    width: 40px;
+    padding-left: 4px;
+}
+
+dd.unit sup {
+    font-size: 9px;
+}
+
+dd.history {
+    text-align: right;
+
+    width: 120px;
+}
+
+#metrics rect.bkgnd {
+    fill: #f9f9f9;
+}
+
+#metrics path {
+    fill: none;
+    stroke: #000000;
+    stroke-width: 0.75px;
+}
+
+#metrics path.target {
+    fill: #e0e0e0;
+    stroke: none;
+}
+
+#metrics path.alert {
+    stroke: #ff0000;
+    stroke-width: 1.75px;
+}
+
+#metrics circle.value {
+    fill: #000000;
+}
+
+#metrics path.mid {
+    stroke: #e0e0e0;
+}
+
+#metrics rect.value {
+    fill: #a0a0a0;
+    stroke: none;
+}
+
+#metrics rect.value.alert {
+    fill: #ff0000;
+    stroke: none;
+}
+
+/* Alert styles */
+
+dl.alert dt.label {
+    color: #a55;
+}
+
+dl.alert dd.unit, dl.alert dd span {
+    color: #f99;
+}
+
+dl.alert dd.int, dl.alert dd.float, dl.alert dd.bool {
+    color: #f00;
+}
+
+dl.alert rect.bkgnd {
+    fill: #f9f0f0;
+}
+
+dl.alert path.target {
+    fill: #efd9d9;
+}
+
+dl.alert circle.value {
+    fill: #ff0000;
+}
+
+dl.alert path.mid {
+    stroke: #efd9d9;
+}
+
+/* Map styles */
+
+#map {
+    position: absolute;
+    top: 0;
+    left: 0;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+}
+
+#map .leaflet-container, #map div {
+    font: 14px "Proxima Nova", Helvetica, sans-serif;
+}
+
+#map .waypoint-label, #map .path-label {
+    font: 12px "Proxima Nova", Helvetica, sans-serif;
+    font-weight: bold;
+    border: 1px solid #999;
+    color: #999;
+    background: white;
+    width: auto !important;
+    height: auto !important;
+    margin-left: 0 !important;
+    padding: 2px;
+    border-radius: 3px;
+    white-space:nowrap;
+}
+
+#map .path-label {
+    color: #c99;
+    border: 1px solid #c99;
+}
+
+#plane-marker {
+    width: 16px;
+    height: 16px;
+    background: none;
+    font: 18px "Proxima Nova", Helvetica, sans-serif;
+    color: #f00;
+    line-height: 16px;
+}
+
+#map .photo-label {
+    width: 16px;
+    height: 16px;
+    background: none;
+}
+
+#map .target-label {
+    width: 16px;
+    height: 16px;
+}
+
+div.leaflet-control-attribution {
+    display: none;
+}
+
+div.coords-control {
+    padding:5px 10px;
+    background:rgba(0,0,0,0.5);
+    color:#fff;
+    font-size:11px;
+    line-height:18px;
+    border-radius:3px;
+}
+
+.leaflet-grid-label .lng {
+    margin-left: 8px;
+    -webkit-transform: rotate(90deg);
+    transform: rotate(90deg);
+}
+
+#map .leaflet-control-scale-line {
+    border: 2px solid #333;
+    border-top: none;
+    background: transparent;
+}
+
+/* Enable/disable controls */
+#metrics form {
+    width: 354px;
+    padding: 10px 0;
+}
+
+.onoffswitch {
+    position: relative; width: 130px;
+    margin-right: 10px;
+    display: inline-block;
+    -webkit-user-select:none; -moz-user-select:none; -ms-user-select: none;
+    -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box;
+}
+.onoffswitch-checkbox {
+    display: none;
+}
+.onoffswitch-label {
+    display: block; overflow: hidden; cursor: pointer;
+    border: 2px solid #a0a0a0; border-radius: 6px;
+}
+.onoffswitch-inner {
+    display: block; width: 200%; margin-left: -100%;
+    -moz-transition: margin 0.3s ease-in 0s; -webkit-transition: margin 0.3s ease-in 0s;
+    -o-transition: margin 0.3s ease-in 0s; transition: margin 0.3s ease-in 0s;
+}
+.onoffswitch-inner:before, .onoffswitch-inner:after {
+    display: block;
+    float: left;
+    width: 50%;
+    height: 24px;
+    padding: 1px 0 0 0;
+    line-height: 24px;
+    font-size: 14px;
+    color: white;
+    -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box;
+}
+.onoffswitch-inner:before {
+    content: "ON";
+    padding-left: 8px;
+    background-color: #efd9d9; color: #a55;
+}
+.onoffswitch-inner:after {
+    content: "OFF";
+    padding-right: 8px;
+    background-color: #f9f9f9; color: #a0a0a0;
+    text-align: right;
+}
+.onoffswitch-switch {
+    display: block; width: 24px; margin: 0px;
+    background: #a0a0a0;
+    border: 2px solid #777; border-radius: 6px;
+    position: absolute; top: 0; bottom: 0; right: 102px;
+    -moz-transition: all 0.3s ease-in 0s; -webkit-transition: all 0.3s ease-in 0s;
+    -o-transition: all 0.3s ease-in 0s; transition: all 0.3s ease-in 0s;
+}
+.onoffswitch-checkbox:checked + .onoffswitch-label .onoffswitch-inner {
+    margin-left: 0;
+}
+.onoffswitch-checkbox:checked + .onoffswitch-label .onoffswitch-switch {
+    right: 0px;
+    background-color: #f99;
+    border-color: #a55;
+}
+
+label[for=txdisable] .onoffswitch-inner:before {
+    content: "TX DISABLED";
+}
+
+label[for=txdisable] .onoffswitch-inner:after {
+    content: "TX ENABLED";
+}
+
+label[for=dropenable] .onoffswitch-inner:before {
+    content: "DROP ARMED";
+}
+
+label[for=dropenable] .onoffswitch-inner:after {
+    content: "DROP SAFE";
+}
+
+input[name=abort] {
+    width: 66px;
+    position: relative;
+    display: inline-block;
+    height: 28px;
+    margin: 0;
+    padding: 0;
+    border: 2px solid #a55; border-radius: 6px;
+    line-height: 24px;
+    vertical-align: top;
+    background-color: #f99;
+    color: #a55;
+    font-weight: bold;
+}

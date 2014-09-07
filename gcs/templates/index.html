@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>GCS</title>
+
+        <!-- Include head block assets -->
+        {% for f in environment['styles'] %}
+            <link rel="stylesheet" href="{{ f }}">
+        {% end %}
+
+        <script src="http://api.tiles.mapbox.com/mapbox.js/v1.5.2/mapbox.js"></script>
+        <link href="http://api.tiles.mapbox.com/mapbox.js/v1.5.2/mapbox.css" rel="stylesheet" />
+
+        {% for f in environment['js'] %}
+            <script src="{{ f }}"></script>
+        {% end %}
+    </head>
+    <body>
+        <div id="map">
+
+        </div>
+
+        <div id="metrics">
+            <form name="controls" onsubmit="return false">
+                <div class="onoffswitch">
+                    <input type="checkbox" name="txdisable" class="onoffswitch-checkbox" id="txdisable">
+                    <label class="onoffswitch-label" for="txdisable">
+                        <span class="onoffswitch-inner"></span>
+                        <span class="onoffswitch-switch"></span>
+                    </label>
+                </div>
+                <div class="onoffswitch">
+                    <input type="checkbox" name="dropenable" class="onoffswitch-checkbox" id="dropenable">
+                    <label class="onoffswitch-label" for="dropenable">
+                        <span class="onoffswitch-inner"></span>
+                        <span class="onoffswitch-switch"></span>
+                    </label>
+                </div>
+                <input type="button" name="abort" value="ABORT" id="abort" />
+            </form>
+        </div>
+
+        <script>
+        var map = L.map('map', {maxZoom: 25})
+            .setView([-37, 145], 15)
+            .addLayer(L.mapbox.tileLayer('examples.map-20v6611k', {
+                detectRetina: true,
+                maxNativeZoom: 19
+            }));
+        map.zoomControl.setPosition('topright');
+        var marker = L.marker([0, 0], {
+            icon: L.divIcon({
+                className: 'plane-marker',
+                html: '<div id="plane-marker">&#x2708;</div>',
+                iconSize: [16, 16]
+            })
+        });
+        marker.addTo(map);
+
+        var CoordsControl = L.Control.extend({
+            options: {
+                position: 'bottomright'
+            },
+
+            onAdd: function (m) {
+                // create the control container with a particular class name
+                var container = L.DomUtil.create('div', 'coords-control');
+
+                // ... initialize other DOM elements, add listeners, etc.
+                map.on('click', function(evt) {
+                    container.innerHTML = evt.latlng.lat.toFixed(6) + ', ' + evt.latlng.lng.toFixed(6) + '<br/>WGS84';
+                });
+
+                return container;
+            }
+        });
+
+        map.addControl(new CoordsControl());
+
+        L.control.scale({position: 'bottomright', imperial: false}).addTo(map);
+        </script>
+
+        <!-- Included body assets -->
+        {% for f in environment['body_js'] %}
+            <script src="{{ f }}"></script>
+        {% end %}
+    </body>
+</html>

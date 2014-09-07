@@ -1,0 +1,170 @@
+#!/usr/bin/env python
+# coding=utf-8
+
+#Copyright (C) 2013 Ben Dyer
+#
+#Permission is hereby granted, free of charge, to any person obtaining a copy
+#of this software and associated documentation files (the "Software"), to deal
+#in the Software without restriction, including without limitation the rights
+#to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#copies of the Software, and to permit persons to whom the Software is
+#furnished to do so, subject to the following conditions:
+#
+#The above copyright notice and this permission notice shall be included in
+#all copies or substantial portions of the Software.
+#
+#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#SOFTWARE.
+
+import os
+import gcs
+import functools
+import tornado.web
+import pkg_resources
+import logging as log
+from gcs import radio, plog, mission
+import tornado.ioloop
+import tornado.netutil
+import tornado.httpserver
+from optparse import OptionParser, OptionGroup
+
+
+if __name__ == "__main__":
+    assert pkg_resources.resource_exists("gcs", "templates")
+    assert pkg_resources.resource_isdir("gcs", "templates")
+    assert pkg_resources.resource_exists("gcs", "static/css")
+    assert pkg_resources.resource_isdir("gcs", "static/css")
+    assert pkg_resources.resource_exists("gcs", "static/js")
+    assert pkg_resources.resource_isdir("gcs", "static/js")
+
+    log.basicConfig(format="%(asctime)-15s %(message)s", level=log.DEBUG)
+
+    parser = OptionParser(
+        usage="usage: %prog [options] RADIO_DEVICE MISSION_CONFIG",
+        version="%prog 1.0dev1", add_help_option=False,
+        description="GCS server")
+
+    parser.add_option("--help", action="help",
+                      help="show this help message and exit")
+    parser.add_option("-v", "--verbose", action="store_true", dest="verbose",
+                      help="outputs additional log messages")
+    parser.add_option("--debug", action="store_true", dest="debug",
+                      help="run in debug mode (restart on code changes)")
+    parser.add_option("--replay", action="store_true", dest="replay",
+                      help="replay a log file")
+    parser.add_option("--nmea", dest="nmea",
+                      help="output NMEA to the specified file or serial port")
+
+    cmd_group = OptionGroup(parser, "Network Options")
+    cmd_group.add_option("-p", "--port", type="int", dest="port", default=80,
+                         help="listen for HTTP requests on PORT")
+    cmd_group.add_option("--cdn-domain", type="string", dest="cdn_domain",
+                         default="",
+                         help="serve minified resources from DOMAIN")
+
+    opts, args = parser.parse_args()
+
+    static_dir = pkg_resources.resource_filename("gcs", "static")
+    template_dir = pkg_resources.resource_filename("gcs", "templates")
+
+    # Asset setup
+    if opts.debug:
+        environment = gcs.ASSET_MANIFEST
+    else:
+        # Build bundles and generate a versioned URL based on the bundle
+        # content hash
+        cdn = ("//" + opts.cdn_domain) if opts.cdn_domain else ""
+        environment = {}
+        for key in gcs.ASSET_MANIFEST:
+            ext = "js" if key.endswith("js") else "css"
+
+            gcs.StaticBuild.build(static_dir, key, ext)
+            bundle_key = gcs.StaticBuild._bundles[key]["sha1"][0:8]
+            environment[key] = \
+                ["%s/min/%s/%s.%s?v=%s" % (cdn, ext, key, ext, bundle_key)]
+
+    if len(args) and not opts.replay and args[0].startswith("/dev"):
+        radio_conn = radio.RadioConn(args[0])
+    else:
+        radio_conn = None
+
+    if len(args) > 1:
+        gcs_conn = None  # FIXME
+    else:
+        gcs_conn = None
+
+    if opts.nmea:
+        if opts.nmea.startswith("/dev"):
+            nmea_conn = serial.Serial(opts.nmea, 4800)
+        else:
+            nmea_conn = open(opts.nmea, "w")
+    else:
+        nmea_conn = None
+
+    app = tornado.web.Application([
+            (r"/min/(js|css)/(.*)", gcs.StaticBuild),
+            (r"/telemetry", gcs.TelemetryHandler,
+                {"radio_conn": radio_conn, "gcs_conn": gcs_conn}),
+            (r"/", gcs.UI, {"environment": environment}),
+        ],
+        debug=opts.debug, gzip=True, template_path=template_dir,
+        static_path=static_dir, static_handler_class=gcs.StaticFile)
+    http_server = tornado.httpserver.HTTPServer(app)
+    http_server.listen(opts.port)
+    ioloop = tornado.ioloop.IOLoop.instance()
+
+    mission = mission.Mission(args[1] if len(args) > 1 else args[0], 0)
+
+    # Start the 3G connection
+    ioloop.add_callback(gcs.relay_conn)
+
+    if opts.replay:
+        seq = plog.iterlogs_raw(open(args[0], 'rb'))
+        def get_next_packet():
+            i = 0
+            for packet in seq:
+                if i == 500:
+                    gcs.handle_radio_packet(nmea_conn,
+                                            radio.parse_packet(packet), None)
+                    break
+                i += 1
+
+        telemetry_recv_timer = tornado.ioloop.PeriodicCallback(
+            get_next_packet, 500, io_loop=ioloop)
+        telemetry_recv_timer.start()
+
+    if radio_conn:
+        radio_conn.add_to_ioloop(
+            ioloop,
+            callback=functools.partial(gcs.handle_radio_packet, nmea_conn))
+        radio_send_timer = tornado.ioloop.PeriodicCallback(
+            functools.partial(gcs.send_heartbeat_packet, radio_conn, mission),
+            500, io_loop=ioloop)
+        radio_send_timer.start()
+    else:
+        # Stub out the radio connection
+        class DummyConn(object):
+            def __init__(self):
+                pass
+
+            def send(self, *args, **kwargs):
+                pass
+
+        radio_conn = DummyConn()
+
+        radio_send_timer = tornado.ioloop.PeriodicCallback(
+            functools.partial(gcs.send_heartbeat_packet, radio_conn, mission),
+            500, io_loop=ioloop)
+        radio_send_timer.start()
+
+    if gcs_conn:
+        gcs_conn.connect(args[1])
+        gcs_conn.add_to_ioloop(ioloop, callback=gcs.handle_iomon_packet)
+        gcs_conn.write_packet_rate_div(100)
+
+    ioloop.start()

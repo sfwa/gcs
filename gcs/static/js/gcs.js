@@ -286,7 +286,7 @@ d3.select('#metrics')
         .selectAll("dl").data(function (g) { return g.metrics; }).enter()
             .append("dl").html(formatRow);
 
-var ws = new WebSocket("ws://localhost:8080/telemetry");
+var ws = new WebSocket("ws://" + window.location.host + "/telemetry");
 var flightPathColors = [
     "b38677", "ffd697", "669f46", "00c4ff", "e3a0fa", "ff9971", "dbe7c5",
     "3dffc4", "007fcf", "573f56", "926026", "404a2f", "00a2a1", "4233a6",

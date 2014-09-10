@@ -535,6 +535,4 @@ class StaticFile(tornado.web.StaticFileHandler):
     def set_extra_headers(self, path):
         self.set_header("Date", datetime.datetime.utcnow())
         self.set_header("Vary", "Accept-Encoding")
-        self.set_header("Cache-Control", "public, max-age=" +
-            str(StaticBuild._cache_time))
 

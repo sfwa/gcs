@@ -67,11 +67,12 @@ class Mission(object):
             out_waypoint["roll"] = math.radians(float(wp.get("roll", 0.0)))
             out_waypoint["alt"] = float(wp.get(
                 "pos", [0, 0, defaults.get("alt", 70.0)])[2])
-            if self.heightmap:
-                out_waypoint["alt"] += self.heightmap.lookup(
-                    out_waypoint["lat"], out_waypoint["lon"])
             out_waypoint["lat"] = math.radians(float(wp["pos"][0]))
             out_waypoint["lon"] = math.radians(float(wp["pos"][1]))
+            if self.heightmap:
+                out_waypoint["alt"] += self.heightmap.lookup(
+                    math.degrees(out_waypoint["lat"]),
+                    math.degrees(out_waypoint["lon"]))
             out_waypoint["flags"] = int(wp.get("flags", "0x0"), 16)
 
             out_waypoints[int(idx)] = out_waypoint

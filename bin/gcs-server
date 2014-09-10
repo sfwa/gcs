@@ -27,7 +27,7 @@ import functools
 import tornado.web
 import pkg_resources
 import logging as log
-from gcs import radio, plog, mission
+from gcs import radio, plog, mission, heightmap
 import tornado.ioloop
 import tornado.netutil
 import tornado.httpserver

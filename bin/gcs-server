@@ -23,6 +23,7 @@
 
 import os
 import gcs
+import serial
 import functools
 import tornado.web
 import pkg_resources

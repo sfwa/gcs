@@ -166,10 +166,13 @@ def handle_radio_packet(nmea_conn, packet, conn):
     # Add ground height data
     if "FCS_PARAMETER_ESTIMATED_POSITION_LLA" in packet[1] and MISSION and \
             MISSION.heightmap:
-        packet[1]["Ground Height"] = MISSION.heightmap.lookup(
-            packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0,
-            packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0
-        )
+        try:
+            packet[1]["Ground Height"] = MISSION.heightmap.lookup(
+                packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0,
+                packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0
+            )
+        except Exception:
+            pass
         packet[1]["GCS Pressure"] = GCS_PRESSURE
         packet[1]["GCS Latitude"] = GCS_POS[0]
         packet[1]["GCS Longitude"] = GCS_POS[1]
@@ -354,8 +357,8 @@ def handle_iomon_packet(packet, conn):
         # Convert to Pa
         new_pressure = float(packet[1]["FCS_PARAMETER_PRESSURE_TEMP"][0]) * 0.02 * 100.0
 
-    # Average pressure over ~10 seconds
-    GCS_PRESSURE += 0.01 * (new_pressure - GCS_PRESSURE)
+        # Average pressure over ~10 seconds
+        GCS_PRESSURE += 0.01 * (new_pressure - GCS_PRESSURE)
 
 
 def handle_relay_message(msg):
@@ -421,9 +424,9 @@ class AltitudeHandler(tornado.web.RequestHandler):
         lat = float(lat)
         lon = float(lon)
 
-        if MISSION and MISSION.heightmap:
+        try:
             self.write(str(MISSION.heightmap.lookup(lat, lon)))
-        else:
+        except Exception:
             self.write("0.0")
 
 
@@ -432,6 +435,9 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
         self.radio_conn = kwargs.pop("radio_conn", None)
         self.gcs_conn = kwargs.pop("gcs_conn", None)
         super(TelemetryHandler, self).__init__(*args, **kwargs)
+
+    def check_origin(self, origin):
+        return True
 
     def open(self):
         log.info("TelemetryHandler.open(%s)" % repr(self))

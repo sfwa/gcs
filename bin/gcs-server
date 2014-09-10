@@ -59,6 +59,8 @@ if __name__ == "__main__":
                       help="replay a log file")
     parser.add_option("--nmea", dest="nmea",
                       help="output NMEA to the specified file or serial port")
+    parser.add_option("--heightmap", dest="heightmap",
+                      help="path to an SRTM heightmap for the mission area")
 
     cmd_group = OptionGroup(parser, "Network Options")
     cmd_group.add_option("-p", "--port", type="int", dest="port", default=80,
@@ -73,28 +75,15 @@ if __name__ == "__main__":
     template_dir = pkg_resources.resource_filename("gcs", "templates")
 
     # Asset setup
-    if opts.debug:
-        environment = gcs.ASSET_MANIFEST
-    else:
-        # Build bundles and generate a versioned URL based on the bundle
-        # content hash
-        cdn = ("//" + opts.cdn_domain) if opts.cdn_domain else ""
-        environment = {}
-        for key in gcs.ASSET_MANIFEST:
-            ext = "js" if key.endswith("js") else "css"
-
-            gcs.StaticBuild.build(static_dir, key, ext)
-            bundle_key = gcs.StaticBuild._bundles[key]["sha1"][0:8]
-            environment[key] = \
-                ["%s/min/%s/%s.%s?v=%s" % (cdn, ext, key, ext, bundle_key)]
+    environment = gcs.ASSET_MANIFEST
 
     if len(args) and not opts.replay and args[0].startswith("/dev"):
         radio_conn = radio.RadioConn(args[0])
     else:
         radio_conn = None
 
-    if len(args) > 1:
-        gcs_conn = None  # FIXME
+    if len(args) > 1 and not opts.replay and args[1].startswith("/dev"):
+        gcs_conn = radio.RadioConn(args[1])
     else:
         gcs_conn = None
 
@@ -107,9 +96,9 @@ if __name__ == "__main__":
         nmea_conn = None
 
     app = tornado.web.Application([
-            (r"/min/(js|css)/(.*)", gcs.StaticBuild),
             (r"/telemetry", gcs.TelemetryHandler,
                 {"radio_conn": radio_conn, "gcs_conn": gcs_conn}),
+            (r"/alt/([0-9\-.]+)/([0-9\-.]+)", gcs.AltitudeHandler),
             (r"/", gcs.UI, {"environment": environment}),
         ],
         debug=opts.debug, gzip=True, template_path=template_dir,
@@ -118,7 +107,12 @@ if __name__ == "__main__":
     http_server.listen(opts.port)
     ioloop = tornado.ioloop.IOLoop.instance()
 
-    mission = mission.Mission(args[1] if len(args) > 1 else args[0], 0)
+    if opts.heightmap:
+        heightmap = heightmap.Heightmap(opts.heightmap)
+    else:
+        heightmap = None
+
+    mission = mission.Mission(args[-1], 0, heightmap=heightmap)
 
     # Start the 3G connection
     ioloop.add_callback(gcs.relay_conn)
@@ -137,6 +131,11 @@ if __name__ == "__main__":
         telemetry_recv_timer = tornado.ioloop.PeriodicCallback(
             get_next_packet, 500, io_loop=ioloop)
         telemetry_recv_timer.start()
+
+    if gcs_conn:
+        gcs_conn.add_to_ioloop(
+            ioloop,
+            callback=functools.partial(gcs.handle_iomon_packet, gcs_conn))
 
     if radio_conn:
         radio_conn.add_to_ioloop(

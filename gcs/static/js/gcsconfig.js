@@ -45,7 +45,7 @@ defineGroup("Summary")
             .range(-10, 40).target(15, 30).alert(10, 35)
             .interval("Airspeed Uncertainty"))
     .add(defineMetric("altitude").basedOn(tmpl.distance).field("Altitude")
-            .range(-10, 200).target(70, 140).alert(50, 150)
+            .range(-10, 200).target(60, 120).alert(50, 122)
             .interval("Altitude Uncertainty"))
     .add(defineMetric("track").basedOn(tmpl.heading).field("Track")
             .interval("Track Uncertainty"))
@@ -108,7 +108,13 @@ defineGroup("Power")
 defineGroup("GCS Status")
     .add(defineMetric("GCS pressure", {unit: "mbar", type: "float(2)"})
             .field("GCS Barometric Pressure")
-            .range(950, 1100).alert(980, 1050));
+            .range(950, 1100).alert(980, 1050))
+    .add(defineMetric("GCS latitude",
+            {unit: "°", type: "float(6)", range: {min: -90, max: 90}})
+            .field("GCS Latitude"))
+    .add(defineMetric("GCS longitude",
+            {unit: "°", type: "float(6)", range: {min: -180, max: 180}})
+            .field("GCS Longitude"));
 
 function radians(v) {
     return v * (Math.PI / 180.0);

@@ -27,8 +27,6 @@ import time
 import math
 import email
 import base64
-import slimit
-import cssmin
 import urllib
 import hashlib
 import httplib
@@ -76,6 +74,11 @@ TX_ENABLE = True
 ABORT = False
 LAST_RADIO_UPDATE = time.time()
 LAST_OUT_MSG = None
+GCS_POS = (-37.954719, 145.237617)
+GCS_ALT = 41.1
+GCS_POS_INITIALIZED = False
+GCS_PRESSURE = 101325
+WIND = (0, 0)
 
 
 @tornado.gen.coroutine
@@ -132,7 +135,7 @@ def handle_radio_packet(nmea_conn, packet, conn):
     ensure it's published to individual sockets.
     '''
     global LAST_NAV_STATE_IDX, PENDING_CHANGES, LAST_RADIO_UPDATE, \
-           LAST_FRAME, LAST_FRAME_TIME
+           LAST_FRAME, LAST_FRAME_TIME, WIND
     if not packet[1]:
         return
 
@@ -157,8 +160,26 @@ def handle_radio_packet(nmea_conn, packet, conn):
             MISSION.current_nav_state_id = LAST_NAV_STATE_IDX
             changed = MISSION.parse_config()
     packet[1]["Nav Updates Remaining"] = PENDING_CHANGES
-    if changed:
+    if changed and MISSION:
         packet[1]["Mission Config"] = MISSION.to_json()
+
+    # Add ground height data
+    if "FCS_PARAMETER_ESTIMATED_POSITION_LLA" in packet[1] and MISSION and \
+            MISSION.heightmap:
+        packet[1]["Ground Height"] = MISSION.heightmap.lookup(
+            packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0,
+            packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0
+        )
+        packet[1]["GCS Pressure"] = GCS_PRESSURE
+        packet[1]["GCS Latitude"] = GCS_POS[0]
+        packet[1]["GCS Longitude"] = GCS_POS[1]
+
+    # Keep track of current wind for release point calculation
+    if "FCS_PARAMETER_ESTIMATED_WIND_VELOCITY_NED" in packet[1]:
+        WIND = (
+            packet[1]["FCS_PARAMETER_ESTIMATED_WIND_VELOCITY_NED"][0] * 1e-2,
+            packet[1]["FCS_PARAMETER_ESTIMATED_WIND_VELOCITY_NED"][1] * 1e-2
+        )
 
     # Notify currently-open sockets
     msg = json.dumps(packet[1])
@@ -171,7 +192,8 @@ def send_heartbeat_packet(conn, mission):
     Invoked periodically to send GCS heartbeats to the UAV.
     '''
     global LAST_FRAME_ID, LAST_NAV_STATE_IDX, PENDING_CHANGES, START_PATH_ID,\
-           START_PATH_NAV_STATE_IDX, MISSION, TX_ENABLE, ABORT, LAST_OUT_MSG
+           START_PATH_NAV_STATE_IDX, MISSION, TX_ENABLE, ABORT, LAST_OUT_MSG,\
+           GCS_POS, GCS_ALT, GCS_PRESSURE
 
     param_log = plog.ParameterLog()
 
@@ -227,6 +249,17 @@ def send_heartbeat_packet(conn, mission):
             parameter_type=plog.ParameterType.FCS_PARAMETER_NAV_VERSION,
             value_type=plog.ValueType.FCS_VALUE_UNSIGNED,
             value_precision=32, values=[START_PATH_NAV_STATE_IDX + 1]))
+
+    param_log.append(plog.DataParameter(
+        device_id=0,
+        parameter_type=plog.ParameterType.FCS_PARAMETER_DERIVED_REFERENCE_PRESSURE,
+        value_type=plog.ValueType.FCS_VALUE_SIGNED,
+        value_precision=32, values=[GCS_PRESSURE]))
+    param_log.append(plog.DataParameter(
+        device_id=0,
+        parameter_type=plog.ParameterType.FCS_PARAMETER_DERIVED_REFERENCE_ALT,
+        value_type=plog.ValueType.FCS_VALUE_SIGNED,
+        value_precision=32, values=[GCS_ALT * 1e2]))
 
     if TX_ENABLE:
         LAST_OUT_MSG = param_log.serialize()
@@ -302,40 +335,27 @@ def handle_iomon_packet(packet, conn):
     '''
     Invoked each time a packet is received from the IO board USB connection.
     '''
-    global GCS_STATE, NOTIFY_SOCKETS
+    global GCS_ALT, GCS_POS, GCS_PRESSURE, GCS_POS_INITIALIZED, MISSION
 
     log.info("handle_iomon_packet(%s, %s)" % (repr(packet), repr(conn)))
 
-    data = {
-        "GCS Barometric Pressure": packet["pressure"],
-        "GCS IO State": packet["status"],
-        "GCS Flags": 0,
-        "GCS CPU State": 0,
-        "GCS Frame ID": 0,
-        "GCS 3G Signal": 0
-    }
+    if not GCS_POS_INITIALIZED and "FCS_PARAMETER_GPS_POSITION_LLA" in packet[1]:
+        new_pos = packet[1]["FCS_PARAMETER_GPS_POSITION_LLA"]
+        GCS_POS = (
+            new_pos[0] * 180.0 / 2147483648.0,
+            new_pos[1] * 180.0 / 2147483648.0
+        )
+        GCS_POS_INITIALIZED = True
 
-    if packet.get("gps"):
-        data.update({
-            "GCS Latitude": packet["gps"].get("lat"),
-            "GCS Longitude": packet["gps"].get("lon"),
-            "GCS Altitude": packet["gps"].get("alt")
-        })
+        if MISSION and MISSION.heightmap:
+            GCS_ALT = MISSION.heightmap.lookup(*GCS_POS)
 
-        # FIXME
-        GCS_STATE["Latitude"] = -37.0
-        GCS_STATE["Longitude"] = 145.0
-
-    GCS_STATE["Altitude"] = 50.0
+    if "FCS_PARAMETER_PRESSURE_TEMP" in packet:
+        # Convert to Pa
+        new_pressure = float(packet[1]["FCS_PARAMETER_PRESSURE_TEMP"][0]) * 0.02 * 100.0
 
     # Average pressure over ~10 seconds
-    GCS_STATE["Pressure"] += \
-        0.001 * ((float(packet["pressure"]) * 100.0) - GCS_STATE["Pressure"])
-
-    # Notify currently-open sockets
-    msg = json.dumps(data)
-    for socket in NOTIFY_SOCKETS:
-        socket.write_message(msg)
+    GCS_PRESSURE += 0.01 * (new_pressure - GCS_PRESSURE)
 
 
 def handle_relay_message(msg):
@@ -396,6 +416,17 @@ class UI(tornado.web.RequestHandler):
             self.render("index.html", environment=self.environment)
 
 
+class AltitudeHandler(tornado.web.RequestHandler):
+    def get(self, lat, lon):
+        lat = float(lat)
+        lon = float(lon)
+
+        if MISSION and MISSION.heightmap:
+            self.write(str(MISSION.heightmap.lookup(lat, lon)))
+        else:
+            self.write("0.0")
+
+
 class TelemetryHandler(tornado.websocket.WebSocketHandler):
     def __init__(self, *args, **kwargs):
         self.radio_conn = kwargs.pop("radio_conn", None)
@@ -407,7 +438,8 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
 
     def on_message(self, message):
         global START_PATH_ID, START_PATH_NAV_STATE_IDX, LAST_NAV_STATE_IDX, \
-               PENDING_CHANGES, NOTIFY_SOCKETS, MISSION, TX_ENABLE, ABORT
+               PENDING_CHANGES, NOTIFY_SOCKETS, MISSION, TX_ENABLE, ABORT, \
+               WIND
         log.info("TelemetryHandler.on_message(%s, %s)" %
                  (repr(self), repr(message)))
 
@@ -438,14 +470,23 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
 
             # Adjust drop_lat based on the distance travelled by the bottle
             # when dropped from 60 m at 21 m/s -- 3.5 s falling and some
-            # unknown deceleration, so 40 m is probably reasonable
-            drop_lat -= math.degrees(40.0 / WGS84_A)
+            # unknown deceleration, so 45 m is probably reasonable
+            airspeed = 21.0
+            lead_factor = 45.0 / airspeed
+
+            # Work out what the ground speed will be, based on current wind
+            wind_comp = math.sqrt(max(0.0, airspeed**2 - WIND[1]**2))
+            wind_comp += WIND[0]
+
+            lead_dist = lead_factor * wind_comp
+
+            drop_lat -= math.degrees(lead_dist / WGS84_A)
 
             # DREN and DREX are always south/north of the drop point
-            dren_lat = drop_lat - math.degrees(75.0 / WGS84_A)
+            dren_lat = drop_lat - math.degrees(150.0 / WGS84_A)
             dren_lon = drop_lon
 
-            drex_lat = drop_lat + math.degrees(75.0 / WGS84_A)
+            drex_lat = drop_lat + math.degrees(150.0 / WGS84_A)
             drex_lon = drop_lon
 
             # Update the position of the DREN, DROP and DREX waypoints in the
@@ -485,76 +526,6 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
         # Remove from the notification set
         if self in NOTIFY_SOCKETS:
             NOTIFY_SOCKETS.remove(self)
-
-
-class StaticBuild(tornado.web.RequestHandler):
-    _bundles = {}
-    _cache_time = 86400*365*10  # 10 years
-
-    @classmethod
-    def build(cls, basepath, bundle_key, ext):
-        bundle = {}
-
-        # Iterate over files in bundle; determine last modified time and
-        # assemble content
-        last_mtime = 0
-        contents = ""
-        for path in ASSET_MANIFEST[bundle_key]:
-            path = os.path.join(os.path.abspath(basepath),
-                path[len('/static/'):])
-            last_mtime = max(last_mtime, os.stat(path)[stat.ST_MTIME])
-            contents += open(path, "rb").read() + "\n"
-
-        if ext == "js":
-            bundle["contents"] = slimit.minify(
-                unicode(contents, encoding='utf-8')).encode('utf-8')
-        elif ext == "css":
-            bundle["contents"] = cssmin.cssmin(contents)
-        else:
-            assert False
-
-        bundle["sha1"] = hashlib.sha1(bundle["contents"]).hexdigest()
-        bundle["last_modified"] = datetime.datetime.fromtimestamp(last_mtime)
-        bundle["mime_type"] = "text/javascript" if ext == "js" else "text/css"
-
-        StaticBuild._bundles[bundle_key] = bundle
-
-    def head(self, resource, bundle):
-        self.get(resource, bundle, include_body=False)
-
-    def get(self, resource, bundle, include_body=True):
-        key, _, ext = bundle.partition(".")
-        if key not in ASSET_MANIFEST or ext not in ("css", "js"):
-            raise tornado.web.HTTPError(404)
-
-        if key not in StaticBuild._bundles:
-            StaticBuild.build(self.require_setting("static_path"), key, ext)
-
-        bundle = StaticBuild._bundles[key]
-
-        ims_value = self.request.headers.get("If-Modified-Since")
-        if ims_value is not None:
-            if_since = datetime.datetime.fromtimestamp(
-                time.mktime(email.utils.parsedate(ims_value)))
-            if if_since >= bundle["last_modified"]:
-                self.set_status(304)
-                return
-
-        self.set_header("Etag", '"%s"' % bundle["sha1"])
-        self.set_header("Date", datetime.datetime.utcnow())
-        self.set_header("Last-Modified", bundle["last_modified"])
-        self.set_header("Content-Type", bundle["mime_type"])
-        self.set_header("Expires", datetime.datetime.utcnow() +
-            datetime.timedelta(seconds=StaticBuild._cache_time))
-        self.set_header("Cache-Control", "public, max-age=" +
-            str(StaticBuild._cache_time))
-        self.set_header("Vary", "Accept-Encoding")
-
-        if include_body:
-            self.write(bundle["contents"])
-        else:
-            assert self.request.method == "HEAD"
-            self.set_header("Content-Length", len(bundle["contents"]))
 
 
 # Custom static file handler because CloudFront requires a Date header to do

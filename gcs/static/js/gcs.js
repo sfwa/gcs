@@ -145,19 +145,37 @@ function q_to_euler(q) {
 }
 
 var WGS84_A = 6378137.0;
-var FOV_X = 1.712;
-var FOV_Y = FOV_X;
+var FX = 617.23001311, FY = 614.73771581, CX = 640.0, CY = 480.0;
+var K1 = -0.23739513, K2 = 0.05558019, P1 = 0.00167173, P2 = -0.00086707, K3 = -0.00541909;
 
-function cam_from_img(img) {
-    // Convert x, y pixel coordinates to a point on a plane at one metre
-    // from the camera
-    return [
-        (img[0] - 640.0) / 640.0 * FOV_X,
-        (img[1] - 480.0) / 480.0 * FOV_Y
-    ];
+/*
+For the 2.8mm lens:
+
+FX = 762.19568191
+FY = 762.44773083
+CX, CY = 640.0, 480.0 # 627.51187132, 547.71358277
+K1, K2, P1, P2, K3 = -2.82925533e-01, 1.14217268e-01, 5.30644237e-05, 6.09206516e-05, -2.55778433e-02
+*/
+
+function camFromLens(lens) {
+    var x0, y0, x, y, i, r2, icdist, deltaX, deltaY;
+
+    x0 = x = (lens[0] - CX) / FX;
+    y0 = y = (lens[1] - CY) / FY;
+
+    for (i = 0; i < 10; i++) {
+        r2 = x*x + y*y;
+        icdist = 1.0 / (1.0 + ((K3 * r2 + K2) * r2 + K1) * r2);
+        deltaX = 2.0 * P1 * x * y + P2 * (r2 + 2 * x * x);
+        deltaY = P1 * (r2 + 2 * y * y) + 2 * P2 * x * y;
+        x = (x0 - deltaX) * icdist;
+        y = (y0 - deltaY) * icdist;
+    }
+
+    return [x, y];
 }
 
-function geo_from_cam(cam, v_lat, v_lon, v_alt, v_q) {
+function geoFromCam(cam, v_lat, v_lon, v_alt, q) {
     // Convert x, y image coordinates (in metres at 1.0m viewing distance) to
     // body-frame coordinates
     var cx, cy, cz, qx, qy, qz, qw, tx, ty, tz, rx, ry, rz, fac, n, e;
@@ -234,10 +252,7 @@ var sample = {
     "Telemetry Packet Errors": 0,
 
     // GCS packet
-    "GCS Frame ID": 0, "GCS Barometric Pressure": 0, "GCS Left Elevon": 0,
-    "GCS Right Elevon": 0, "GCS Throttle": 0, "GCS Position X": 1,
-    "GCS Position Y": 1, "GCS Position Z": 1, "GCS 3G Signal": 0,
-    "GCS IO State": 0, "GCS CPU State": 0, "GCS Flags": 0,
+    "GCS Barometric Pressure": 0, "GCS Latitude": 0, "GCS Longitude": 0,
 
     // Reference data
     "Reference Latitude": 0.0, "Reference Longitude": 0.0,
@@ -260,8 +275,10 @@ var sample = {
     "Mission Path ID": null,
     "Mission Waypoint Markers": [],
     "Mission Path Lines": [],
-    "Mission Boundary Line": null
+    "Mission Boundary Line": null,
+    "Ground Height": 0.0
 };
+var IMAGE_QUEUE = [], LAST_IMAGE = null;
 
 d3.select('#metrics')
     .selectAll("section").data(groups).enter()
@@ -286,9 +303,13 @@ function addRerouteHandler(marker, pathId, pathName) {
 
 function addDropHandler(marker) {
     marker.on('click', function (evt) {
-        var latLng = marker.getLatLng();
-        ws.send(JSON.stringify(
-            {"drop": {"lat": latLng.lat, "lon": latLng.lng}}));
+        if (evt.originalEvent.shiftKey) {
+            map.removeLayer(marker);
+        } else {
+            var latLng = marker.getLatLng();
+            ws.send(JSON.stringify(
+                {"drop": {"lat": latLng.lat, "lon": latLng.lng}}));
+        }
     });
 }
 
@@ -476,7 +497,7 @@ function handle_telemetry_ws_message(newSample) {
         try {
             sample["Latitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0;
             sample["Longitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0;
-            sample["Altitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][2] * 1e-2;
+            sample["Altitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][2] * 1e-2 - newSample["Ground Height"];
         } catch (exc) {}
         try {
             sample["Velocity N"] = newSample["FCS_PARAMETER_ESTIMATED_VELOCITY_NED"][0] * 1e-2;
@@ -563,18 +584,28 @@ function handle_telemetry_ws_message(newSample) {
 
 function handle_image_ws_message(msg) {
     if (msg.targets) {
-        for (var i = 0, l = msg.targets.length; i < l; i++) {
-            var m = L.marker([0, 0], {
-                icon: L.divIcon({
-                    className: 'target-label',
-                    html: '<div style="background: url(data:image/jpeg;base64,' + msg.thumb + ') -' + (i*16) + 'px;width:16px;height:16px"></div>',
-                    iconSize: [16, 16]
-                })
-            });
-            m.setLatLng(L.latLng(msg.targets[i].lat, msg.targets[i].lon));
-            addDropHandler(m);
-            m.addTo(map);
-        }
+        d3.text("/alt/" + msg.lat.toString() + "/" + msg.lon.toString(), function(err, result) {
+            var groundAlt = parseFloat(result), geo;
+            for (var i = 0, l = msg.targets.length; i < l; i++) {
+                geo = geoFromCam(
+                    camFromLens([msg.targets[i].x, msg.targets[i].y]),
+                    msg.lat, msg.lon, msg.alt - groundAlt, msg.q);
+
+                if (geo) {
+                    var m = L.marker([0, 0], {
+                        icon: L.divIcon({
+                            className: 'target-label',
+                            html: '<div style="background: url(data:image/jpeg;base64,' + msg.thumb + ') -' + (i*16) + 'px;width:16px;height:16px"></div>',
+                            iconSize: [16, 16]
+                        })
+                    });
+
+                    m.setLatLng(L.latLng(geo[0], geo[1]));
+                    addDropHandler(m);
+                    m.addTo(map);
+                }
+            }
+        });
     }
 
     if (msg.name && msg.status) {
@@ -587,33 +618,71 @@ function handle_image_ws_message(msg) {
         }), loc;
         loc = msg.name.substring(0, msg.name.length - 4).split('_');
         m.setLatLng(L.latLng(parseFloat(loc[1]), parseFloat(loc[2])));
-        m.bindPopup("<img class='georef-img' data-loc='" + JSON.stringify(loc) + "' src='http://telemetry-relay.au.tono.my:31285/vQivxdjcFcUH34mLAEcfm77varwTmAA8/" + msg.session + "/" + msg.name + "' width=320 height=240>");
+        m.bindPopup("<img class='georef-img' data-loc='" + JSON.stringify(loc) + "' src='http://telemetry-relay.au.tono.my:31285/vQivxdjcFcUH34mLAEcfm77varwTmAA8/" + msg.session + "/" + msg.name + "' width=640 height=480>");
         m.addTo(map);
+        IMAGE_QUEUE.push(m);
     }
 };
 
 // Add an image click handler to set the drop location based on manual target
 // recognition
-map.on('click', function(evt) {
-    if (evt.originalEvent.target.classList.contains('georef-img')) {
+document.addEventListener('click', function(evt) {
+    if (evt.target.classList.contains('georef-img')) {
         // Calculate actual lat/lon based on location clicked in image
-        var loc = JSON.parse(evt.target.dataset.loc), lat, lng, alt, q, geo, x, y;
+        var loc = JSON.parse(evt.target.dataset.loc), lat, lng, alt, q, geo, x, y, imgRect;
         lat = parseFloat(loc[1]);
         lon = parseFloat(loc[2]);
         alt = parseFloat(loc[3]);
         q = [parseFloat(loc[4]), parseFloat(loc[5]), parseFloat(loc[6]), parseFloat(loc[7])];
 
-        x = evt.originalEvent.clientX * 4;
-        y = evt.originalEvent.clientY * 4;
+        imgRect = evt.target.getBoundingClientRect();
 
-        geo = geo_from_cam(cam_from_img([x, y]), lat, lon, alt, q);
+        x = (evt.clientX - imgRect.left) / imgRect.width * 1280.0;
+        y = (evt.clientY - imgRect.top) / imgRect.height * 960.0;
 
-        if (geo) {
-            ws.send(JSON.stringify({"drop": {"lat": lat, "lon": lng}}));
-        } else {
-            alert("Couldn't georeference: don't click the sky.");
-        }
+        d3.text("/alt/" + lat.toString() + "/" + lon.toString(), function(err, result) {
+            var groundAlt = parseFloat(result);
+            geo = geoFromCam(camFromLens([x, y]), lat, lon, alt - groundAlt, q);
+
+            if (geo) {
+                var m = L.marker([0, 0], {
+                    icon: L.divIcon({
+                        className: 'drop-label',
+                        html: '<div>&#x2716;</div>',
+                        iconSize: [16, 16]
+                    })
+                });
+                m.setLatLng(L.latLng(geo[0], geo[1]));
+                addDropHandler(m);
+                m.addTo(map);
+
+                console.log("Georeferenced image ", evt.target.src, " point (", x, ", ", y, ") to (", geo[0], ", ", geo[1], ")");
+            } else {
+                alert("Couldn't georeference: don't click the sky.");
+
+                console.log("Couldn't georeference image ", evt.target.src, " point (", x, ", ", y, ")");
+            }
+        });
     }
+});
+
+document.addEventListener('keydown', function(evt) {
+    if (evt.keyCode != 65 && evt.keyCode != 83) {
+        return true;
+    }
+
+    var nextImage, idx = -1, dir = evt.keyCode == 65 ? -1 : 1;
+    if (LAST_IMAGE) {
+        idx = IMAGE_QUEUE.indexOf(LAST_IMAGE);
+    }
+
+    nextImage = IMAGE_QUEUE.length > idx + dir && idx + dir >= 0 ? IMAGE_QUEUE[idx + dir] : null;
+    if (nextImage) {
+        nextImage.openPopup();
+        LAST_IMAGE = nextImage;
+    }
+
+    return false;
 });
 
 // Update display based on sample data every second

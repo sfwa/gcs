@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     name='uav',
     version='1.0dev1',
-    packages=['gcs', 'gcs.radio', 'gcs.plog', 'gcs.vectors', 'gcs.mission'],
+    packages=['gcs'],
     scripts=['bin/gcs-server'],
     package_data={
         'gcs': [

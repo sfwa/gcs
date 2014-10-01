@@ -106,9 +106,9 @@ defineGroup("Power")
             }));
 
 defineGroup("GCS Status")
-    .add(defineMetric("GCS pressure", {unit: "mbar", type: "float(2)"})
+    .add(defineMetric("GCS pressure", {unit: "Pa", type: "float(0)"})
             .field("GCS Barometric Pressure")
-            .range(950, 1100).alert(980, 1050))
+            .range(95000, 110000).alert(98000, 105000))
     .add(defineMetric("GCS latitude",
             {unit: "°", type: "float(6)", range: {min: -90, max: 90}})
             .field("GCS Latitude"))

@@ -17,8 +17,9 @@
         {% end %}
     </head>
     <body>
-        <div id="map">
 
+        <div id="map-container">
+            <div id="map"></div>
         </div>
 
         <div id="metrics">
@@ -42,7 +43,7 @@
         </div>
 
         <script>
-        var map = L.map('map', {maxZoom: 25})
+        var map = L.map('map', {maxZoom: 21, doubleClickZoom: false})
             .setView([-37, 145], 15)
             .addLayer(L.mapbox.tileLayer('examples.map-20v6611k', {
                 detectRetina: true,
@@ -58,6 +59,18 @@
         });
         marker.addTo(map);
 
+        function toDMS(v) {
+            var sec = Math.abs(v*3600).toFixed(2);  // convert degrees to seconds & round
+            d = Math.floor(sec / 3600);    // get component deg/min/sec
+            m = Math.floor(sec/60) % 60;
+            s = (sec % 60).toFixed(2);    // pad with trailing zeros
+            if (d<100) d = '0' + d;            // pad with leading zeros
+            if (d<10) d = '0' + d;
+            if (m<10) m = '0' + m;
+            if (s<10) s = '0' + s;
+            return (v < 0 ? '-' : '')  + d + '°' + m + '′' + s + '″';
+        }
+
         var CoordsControl = L.Control.extend({
             options: {
                 position: 'bottomright'
@@ -69,7 +82,8 @@
 
                 // ... initialize other DOM elements, add listeners, etc.
                 map.on('click', function(evt) {
-                    container.innerHTML = evt.latlng.lat.toFixed(6) + ', ' + evt.latlng.lng.toFixed(6) + '<br/>WGS84';
+                    var lat = evt.latlng.lat, lon = evt.latlng.lng;
+                    container.innerHTML = toDMS(lat) + ', ' + toDMS(lon) + '<br/>WGS84';
                 });
 
                 return container;

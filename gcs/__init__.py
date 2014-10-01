@@ -74,8 +74,8 @@ TX_ENABLE = True
 ABORT = False
 LAST_RADIO_UPDATE = time.time()
 LAST_OUT_MSG = None
-GCS_POS = (-37.954719, 145.237617)
-GCS_ALT = 41.1
+GCS_POS = (-26.58766217, 151.84589428)
+GCS_ALT = 433.67
 GCS_POS_INITIALIZED = False
 GCS_PRESSURE = 101325
 WIND = (0, 0)
@@ -140,7 +140,7 @@ def handle_radio_packet(nmea_conn, packet, conn):
         return
 
     #log.info("handle_radio_packet(%s, %s)" % (repr(packet), repr(conn)))
-    log.info("handle_radio_packet(..., %s)" % (repr(conn)))
+    #log.info("handle_radio_packet(..., %s)" % (repr(conn)))
 
     changed = False
     if "FCS_PARAMETER_NAV_VERSION" in packet[1]:
@@ -158,7 +158,10 @@ def handle_radio_packet(nmea_conn, packet, conn):
         LAST_NAV_STATE_IDX = packet[1]["FCS_PARAMETER_NAV_VERSION"][0]
         if MISSION and MISSION.is_sync_complete():
             MISSION.current_nav_state_id = LAST_NAV_STATE_IDX
+            MISSION.gcs_alt = GCS_ALT
             changed = MISSION.parse_config()
+
+        log.info("handle_radio_packet(..., %s): state %d, GPIN %d" % (repr(conn), LAST_NAV_STATE_IDX, packet[1].get("FCS_PARAMETER_GP_IN", [0])[0]))
     packet[1]["Nav Updates Remaining"] = PENDING_CHANGES
     if changed and MISSION:
         packet[1]["Mission Config"] = MISSION.to_json()
@@ -171,11 +174,9 @@ def handle_radio_packet(nmea_conn, packet, conn):
                 packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0,
                 packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0
             )
+            log.debug("GCS_ALT: %f, ground height: %f, altitude: %f" % (GCS_ALT, packet[1]["Ground Height"], packet[1]["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][2] * 1e-2))
         except Exception:
             pass
-        packet[1]["GCS Pressure"] = GCS_PRESSURE
-        packet[1]["GCS Latitude"] = GCS_POS[0]
-        packet[1]["GCS Longitude"] = GCS_POS[1]
 
     # Keep track of current wind for release point calculation
     if "FCS_PARAMETER_ESTIMATED_WIND_VELOCITY_NED" in packet[1]:
@@ -253,17 +254,6 @@ def send_heartbeat_packet(conn, mission):
             value_type=plog.ValueType.FCS_VALUE_UNSIGNED,
             value_precision=32, values=[START_PATH_NAV_STATE_IDX + 1]))
 
-    param_log.append(plog.DataParameter(
-        device_id=0,
-        parameter_type=plog.ParameterType.FCS_PARAMETER_DERIVED_REFERENCE_PRESSURE,
-        value_type=plog.ValueType.FCS_VALUE_SIGNED,
-        value_precision=32, values=[GCS_PRESSURE]))
-    param_log.append(plog.DataParameter(
-        device_id=0,
-        parameter_type=plog.ParameterType.FCS_PARAMETER_DERIVED_REFERENCE_ALT,
-        value_type=plog.ValueType.FCS_VALUE_SIGNED,
-        value_precision=32, values=[GCS_ALT * 1e2]))
-
     if TX_ENABLE:
         LAST_OUT_MSG = param_log.serialize()
         conn.send(LAST_OUT_MSG)
@@ -274,7 +264,7 @@ def send_heartbeat_packet(conn, mission):
 def send_nmea_packet(conn):
     global LAST_FRAME, LAST_FRAME_TIME
 
-    if not LAST_FRAME:
+    if not LAST_FRAME or "FCS_PARAMETER_ESTIMATED_POSITION_LLA" not in LAST_FRAME or "FCS_PARAMETER_AHRS_MODE" not in LAST_FRAME:
         return
 
     fix_time = time.gmtime(LAST_FRAME_TIME)
@@ -298,6 +288,7 @@ def send_nmea_packet(conn):
     else:
         status = "V"
 
+    # Write the RMC sentence
     packet = (
             "GPRMC,{hh:02d}{mm:02d}{ss:02.0f}," +       # HHMMSS UTC
             "{status}," +                               # 'A' or 'V'
@@ -333,6 +324,38 @@ def send_nmea_packet(conn):
     conn.write("$" + packet + "*{:02X}\r\n".format(checksum))
     conn.flush()
 
+    # Write the GGA sentence as well
+    alt = pos[2] * 1e-2 + GCS_ALT
+    packet = (
+            "GPGGA,{hh:02d}{mm:02d}{ss:05.2f}," +       # HHMMSS.ss UTC
+            "{lat_d:02.0f}{lat_m:06.3f},{lat_ns:s}," +  # DDMM.mmm,[N|S]
+            "{lon_d:03.0f}{lon_m:06.3f},{lon_ew:s}," +  # DDDMM.mmm,[E|W]
+            "{status}," +                               # '0' or '1'
+            "{num_svs}," +                              # NN
+            "1.0," +                                    # HDOP
+            "{alt_ae},M," +                           # D.d (metres)
+            "0.0,M," +                                  # D.d (metres)
+            ",,"                                        # unused
+        ).format(
+            hh=fix_time.tm_hour,
+            mm=fix_time.tm_min,
+            ss=fix_time.tm_sec,
+            lat_d=abs(lat_d),
+            lat_m=abs(lat_frac) * 60.0,
+            lat_ns="N" if pos[0] > 0.0 else "S",
+            lon_d=abs(lon_d),
+            lon_m=abs(lon_frac) * 60.0,
+            lon_ew="E" if pos[1] > 0.0 else "W",
+            status="1" if status == "A" else "0",
+            num_svs=9,
+            alt_ae=alt
+        )
+
+    checksum = reduce(lambda s, c: s ^ ord(c), packet, 0)
+
+    conn.write("$" + packet + "*{:02X}\r\n".format(checksum))
+    conn.flush()
+
 
 def handle_iomon_packet(packet, conn):
     '''
@@ -345,20 +368,35 @@ def handle_iomon_packet(packet, conn):
     if not GCS_POS_INITIALIZED and "FCS_PARAMETER_GPS_POSITION_LLA" in packet[1]:
         new_pos = packet[1]["FCS_PARAMETER_GPS_POSITION_LLA"]
         GCS_POS = (
-            new_pos[0] * 180.0 / 2147483648.0,
-            new_pos[1] * 180.0 / 2147483648.0
+            new_pos[0] * 1e-7,
+            new_pos[1] * 1e-7
         )
+
+        # Set the pressure value to the first reading straight away
+        if "FCS_PARAMETER_PRESSURE_TEMP" in packet[1]:
+            GCS_PRESSURE = float(packet[1]["FCS_PARAMETER_PRESSURE_TEMP"][0]) * 2.0
+
         GCS_POS_INITIALIZED = True
 
-        if MISSION and MISSION.heightmap:
-            GCS_ALT = MISSION.heightmap.lookup(*GCS_POS)
+    if MISSION and MISSION.heightmap:
+        GCS_ALT = MISSION.heightmap.lookup(*GCS_POS)
+        MISSION.gcs_alt = GCS_ALT
 
-    if "FCS_PARAMETER_PRESSURE_TEMP" in packet:
+    if "FCS_PARAMETER_PRESSURE_TEMP" in packet[1]:
         # Convert to Pa
-        new_pressure = float(packet[1]["FCS_PARAMETER_PRESSURE_TEMP"][0]) * 0.02 * 100.0
+        new_pressure = float(packet[1]["FCS_PARAMETER_PRESSURE_TEMP"][0]) * 2.0
+        if 95000.0 <= new_pressure <= 110000.0:
+            # Average pressure over ~10 seconds
+            GCS_PRESSURE += 0.01 * (new_pressure - GCS_PRESSURE)
 
-        # Average pressure over ~10 seconds
-        GCS_PRESSURE += 0.01 * (new_pressure - GCS_PRESSURE)
+    msg = json.dumps({
+        "GCS Barometric Pressure": GCS_PRESSURE,
+        "GCS Latitude": GCS_POS[0],
+        "GCS Longitude": GCS_POS[1],
+        "GCS Height": GCS_ALT
+    })
+    for socket in NOTIFY_SOCKETS:
+        socket.write_message(msg)
 
 
 def handle_relay_message(msg):
@@ -478,7 +516,7 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
             # when dropped from 60 m at 21 m/s -- 3.5 s falling and some
             # unknown deceleration, so 45 m is probably reasonable
             airspeed = 21.0
-            lead_factor = 45.0 / airspeed
+            lead_factor = 60.0 / airspeed
 
             # Work out what the ground speed will be, based on current wind
             wind_comp = math.sqrt(max(0.0, airspeed**2 - WIND[1]**2))
@@ -489,20 +527,20 @@ class TelemetryHandler(tornado.websocket.WebSocketHandler):
             drop_lat -= math.degrees(lead_dist / WGS84_A)
 
             # DREN and DREX are always south/north of the drop point
-            dren_lat = drop_lat - math.degrees(150.0 / WGS84_A)
+            dren_lat = drop_lat - math.degrees(200.0 / WGS84_A)
             dren_lon = drop_lon
 
-            drex_lat = drop_lat + math.degrees(150.0 / WGS84_A)
+            drex_lat = drop_lat + math.degrees(100.0 / WGS84_A)
             drex_lon = drop_lon
 
             # Update the position of the DREN, DROP and DREX waypoints in the
             # config file
             MISSION.update_waypoint_in_config(
-                "DREN", {"pos": "(%f, %f, %f)" % (dren_lat, dren_lon, 60.0)})
+                "DREN", {"pos": "(%f, %f, %f)" % (dren_lat, dren_lon, 62.0)})
             MISSION.update_waypoint_in_config(
-                "DROP", {"pos": "(%f, %f, %f)" % (drop_lat, drop_lon, 60.0)})
+                "DROP", {"pos": "(%f, %f, %f)" % (drop_lat, drop_lon, 62.0)})
             MISSION.update_waypoint_in_config(
-                "DREX", {"pos": "(%f, %f, %f)" % (drex_lat, drex_lon, 60.0)})
+                "DREX", {"pos": "(%f, %f, %f)" % (drex_lat, drex_lon, 62.0)})
 
         if "drop_enable" in message_data:
             if message_data["drop_enable"] == "enable":

@@ -176,7 +176,7 @@ class RadioConn(object):
 
         self.conn.write(sentence)
 
-        print "Transmitting: " + repr(sentence)
+        #print "Transmitting: " + repr(sentence)
 
         return sentence
 

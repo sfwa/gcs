@@ -34,6 +34,7 @@ class Mission(object):
         self.pending_changes = collections.deque()
         self.current_nav_state_id = current_nav_state_id
         self.heightmap = heightmap
+        self.gcs_alt = 0.0
 
     def _next_state_idx(self):
         if len(self.pending_changes):
@@ -69,10 +70,6 @@ class Mission(object):
                 "pos", [0, 0, defaults.get("alt", 70.0)])[2])
             out_waypoint["lat"] = math.radians(float(wp["pos"][0]))
             out_waypoint["lon"] = math.radians(float(wp["pos"][1]))
-            if self.heightmap:
-                out_waypoint["alt"] += self.heightmap.lookup(
-                    math.degrees(out_waypoint["lat"]),
-                    math.degrees(out_waypoint["lon"]))
             out_waypoint["flags"] = int(wp.get("flags", "0x0"), 16)
 
             out_waypoints[int(idx)] = out_waypoint
@@ -179,6 +176,13 @@ class Mission(object):
                 waypoints[idx] = options
                 if isinstance(waypoints[idx]["pos"], basestring):
                     waypoints[idx]["pos"] = list(eval(waypoints[idx]["pos"]))
+                if self.heightmap:
+                    waypoints[idx]["pos"][2] =  \
+                        float(waypoints[idx]["pos"][2]) - \
+                        self.gcs_alt + self.heightmap.lookup(
+                                float(waypoints[idx]["pos"][0]),
+                                float(waypoints[idx]["pos"][1]))
+                    log.debug("waypoint %d height %s" % (idx, waypoints[idx]["pos"][2]))
                 if options["name"] in waypoint_names:
                     raise KeyError("Duplicate waypoint name %s" %
                                    options["name"])

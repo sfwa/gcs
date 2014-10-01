@@ -145,17 +145,19 @@ function q_to_euler(q) {
 }
 
 var WGS84_A = 6378137.0;
-var FX = 617.23001311, FY = 614.73771581, CX = 640.0, CY = 480.0;
-var K1 = -0.23739513, K2 = 0.05558019, P1 = 0.00167173, P2 = -0.00086707, K3 = -0.00541909;
 
 /*
-For the 2.8mm lens:
-
-FX = 762.19568191
-FY = 762.44773083
-CX, CY = 640.0, 480.0 # 627.51187132, 547.71358277
-K1, K2, P1, P2, K3 = -2.82925533e-01, 1.14217268e-01, 5.30644237e-05, 6.09206516e-05, -2.55778433e-02
+2.3mm lens
+var FX = 617.23001311, FY = 614.73771581, CX = 640.0, CY = 480.0;
+var K1 = -0.23739513, K2 = 0.05558019, P1 = 0.00167173, P2 = -0.00086707, K3 = -0.00541909;
 */
+
+/*
+2.8mm lens:
+*/
+var FX = 762.19568191, FY = 762.44773083, CX = 627.51187132, CY = 547.71358277; // 640.0, 480.0
+var K1 = -2.82925533e-1, K2 = 1.14217268e-1, P1 = 5.30644237e-5, P2 = 6.09206516e-5, K3 = -2.55778433e-2;
+
 
 function camFromLens(lens) {
     var x0, y0, x, y, i, r2, icdist, deltaX, deltaY;
@@ -253,6 +255,7 @@ var sample = {
 
     // GCS packet
     "GCS Barometric Pressure": 0, "GCS Latitude": 0, "GCS Longitude": 0,
+    "GCS Height": 41.1,
 
     // Reference data
     "Reference Latitude": 0.0, "Reference Longitude": 0.0,
@@ -303,14 +306,20 @@ function addRerouteHandler(marker, pathId, pathName) {
 
 function addDropHandler(marker) {
     marker.on('click', function (evt) {
-        if (evt.originalEvent.shiftKey) {
-            map.removeLayer(marker);
-        } else {
+        window.clearTimeout(marker.timeout);
+
+        if (!evt.originalEvent.shiftKey) {
             var latLng = marker.getLatLng();
             ws.send(JSON.stringify(
                 {"drop": {"lat": latLng.lat, "lon": latLng.lng}}));
         }
     });
+}
+
+function expireMarker(marker) {
+    window.setTimeout(function() {
+        map.removeLayer(marker);
+    }, 3 * 60 * 10000);
 }
 
 ws.onopen = function() {
@@ -338,6 +347,11 @@ function handle_telemetry_ws_message(newSample) {
         sample["Telemetry RSSI"] = newSample["Remote RSSI"];
         sample["RX Error Count"] = newSample["RX Errors"];
         sample["RX Error Fixed Count"] = newSample["RX Errors Fixed"];
+    } else if (newSample["GCS Barometric Pressure"] !== undefined) {
+        sample["GCS Barometric Pressure"] = newSample["GCS Barometric Pressure"];
+        sample["GCS Latitude"] = newSample["GCS Latitude"] || sample["GCS Latitude"];
+        sample["GCS Longitude"] = newSample["GCS Longitude"] || sample["GCS Longitude"];
+        sample["GCS Height"] = newSample["GCS Height"] || sample["GCS Height"];
     } else {
         if (newSample["Nav Updates Remaining"] !== undefined) {
             sample["Nav Updates Remaining"] = newSample["Nav Updates Remaining"];
@@ -397,15 +411,18 @@ function handle_telemetry_ws_message(newSample) {
                 var waypoints = sample["Mission Config"]["waypoints"]
                 for (key in waypoints) {
                     if (waypoints.hasOwnProperty(key)) {
+                        var waypointAlt = waypoints[key].pos[2];
                         var m = L.marker([0, 0], {
                             icon: L.divIcon({
                                 className: 'waypoint-label',
-                                html: '<span>' + sample["Mission Extras"]["waypoint_names_lookup"][key] + '</span>',
+                                html: '<span>' + sample["Mission Extras"]["waypoint_names_lookup"][key] +
+                                      '(' + (waypointAlt > 0.0 ? '+' : '-') + waypointAlt.toFixed(1) + ' m)</span>',
                                 clickable: false,
                                 keyboard: false,
                                 iconSize: [1, 16]
                             })
                         });
+
                         m.setLatLng(L.latLng(waypoints[key].pos[0], waypoints[key].pos[1]));
                         m.addTo(map);
                         sample["Mission Waypoint Markers"].push(m);
@@ -497,7 +514,7 @@ function handle_telemetry_ws_message(newSample) {
         try {
             sample["Latitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][0] * 180.0 / 2147483648.0;
             sample["Longitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][1] * 180.0 / 2147483648.0;
-            sample["Altitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][2] * 1e-2 - newSample["Ground Height"];
+            sample["Altitude"] = newSample["FCS_PARAMETER_ESTIMATED_POSITION_LLA"][2] * 1e-2 + sample["GCS Height"] - newSample["Ground Height"];
         } catch (exc) {}
         try {
             sample["Velocity N"] = newSample["FCS_PARAMETER_ESTIMATED_VELOCITY_NED"][0] * 1e-2;
@@ -536,6 +553,9 @@ function handle_telemetry_ws_message(newSample) {
         }
         try {
             sample['Navigation State'] = newSample["FCS_PARAMETER_NAV_VERSION"][0];
+        } catch (exc) {}
+        try {
+            sample['State Flags'] = (newSample["FCS_PARAMETER_GP_IN"][0] & 1) ? 'M' : 'P';
         } catch (exc) {}
         try {
             sample['NMPC Resets'] = newSample["FCS_PARAMETER_CONTROL_STATUS"][3];
@@ -589,7 +609,7 @@ function handle_image_ws_message(msg) {
             for (var i = 0, l = msg.targets.length; i < l; i++) {
                 geo = geoFromCam(
                     camFromLens([msg.targets[i].x, msg.targets[i].y]),
-                    msg.lat, msg.lon, msg.alt - groundAlt, msg.q);
+                    msg.lat, msg.lon, msg.alt - groundAlt + sample["GCS Height"], msg.q);
 
                 if (geo) {
                     var m = L.marker([0, 0], {
@@ -602,6 +622,7 @@ function handle_image_ws_message(msg) {
 
                     m.setLatLng(L.latLng(geo[0], geo[1]));
                     addDropHandler(m);
+                    expireMarker(m);
                     m.addTo(map);
                 }
             }
@@ -615,12 +636,20 @@ function handle_image_ws_message(msg) {
                 html: '<div>&#x29bf;</div>',
                 iconSize: [16, 16]
             })
-        }), loc;
+        }), loc, popup;
         loc = msg.name.substring(0, msg.name.length - 4).split('_');
+
         m.setLatLng(L.latLng(parseFloat(loc[1]), parseFloat(loc[2])));
-        m.bindPopup("<img class='georef-img' data-loc='" + JSON.stringify(loc) + "' src='http://telemetry-relay.au.tono.my:31285/vQivxdjcFcUH34mLAEcfm77varwTmAA8/" + msg.session + "/" + msg.name + "' width=640 height=480>");
+
+        popup = L.popup({minWidth: 640, maxWidth: 640, minHeight: 480, maxHeight: 480, keepInView: true});
+        popup.setContent("<img class='georef-img' data-loc='" + JSON.stringify(loc) + "' src='http://telemetry-relay.au.tono.my:31285/vQivxdjcFcUH34mLAEcfm77varwTmAA8/" + msg.session + "/" + msg.name + "' width=640 height=480>")
+        m.bindPopup(popup);
         m.addTo(map);
-        IMAGE_QUEUE.push(m);
+
+        // Only queue images if they're above 20m altitude
+        if (parseFloat(loc[3]) > 20.0) {
+            IMAGE_QUEUE.push(m);
+        }
     }
 };
 
@@ -642,7 +671,7 @@ document.addEventListener('click', function(evt) {
 
         d3.text("/alt/" + lat.toString() + "/" + lon.toString(), function(err, result) {
             var groundAlt = parseFloat(result);
-            geo = geoFromCam(camFromLens([x, y]), lat, lon, alt - groundAlt, q);
+            geo = geoFromCam(camFromLens([x, y]), lat, lon, alt - groundAlt + sample["GCS Height"], q);
 
             if (geo) {
                 var m = L.marker([0, 0], {
